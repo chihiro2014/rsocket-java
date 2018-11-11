@@ -18,16 +18,19 @@ package io.rsocket.transport.netty;
 
 import io.rsocket.DuplexConnection;
 import io.rsocket.Frame;
-import java.util.Objects;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
+import reactor.netty.NettyOutbound;
+
+import java.util.Objects;
 
 /** An implementation of {@link DuplexConnection} that connects via TCP. */
 public final class TcpDuplexConnection implements DuplexConnection {
 
   private final Connection connection;
+  private final NettyOutbound outbound;
 
   /**
    * Creates a new instance
@@ -36,6 +39,7 @@ public final class TcpDuplexConnection implements DuplexConnection {
    */
   public TcpDuplexConnection(Connection connection) {
     this.connection = Objects.requireNonNull(connection, "connection must not be null");
+    this.outbound = connection.outbound();
   }
 
   @Override
@@ -60,11 +64,14 @@ public final class TcpDuplexConnection implements DuplexConnection {
 
   @Override
   public Mono<Void> send(Publisher<Frame> frames) {
-    return Flux.from(frames).concatMap(this::sendOne).then();
+    return Flux.from(frames)
+        .map(Frame::content)
+        .concatMap(outbound::sendObject)
+        .then();
   }
 
   @Override
   public Mono<Void> sendOne(Frame frame) {
-    return connection.outbound().sendObject(frame.content()).then();
+    return outbound.sendObject(frame.content()).then();
   }
 }

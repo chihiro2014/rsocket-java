@@ -19,6 +19,8 @@ plugins {
     id 'maven-publish'
     id 'com.jfrog.artifactory'
     id 'com.jfrog.bintray'
+    id 'io.morethan.jmhreport'
+    id 'me.champeau.gradle.jmh'
 }
 
 dependencies {
@@ -36,3 +38,5 @@ dependencies {
 }
 
 description = 'Local RSocket transport implementation'
+
+apply from: 'jmh.gradle'

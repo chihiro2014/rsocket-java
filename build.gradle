@@ -52,7 +52,7 @@ subprojects {
             dependency "ch.qos.logback:logback-classic:${ext['logback.version']}"
             dependency "com.google.code.findbugs:jsr305:${ext['findbugs.version']}"
             dependency "io.netty:netty-buffer:${ext['netty.version']}"
-            dependency "io.netty:netty-tcnative-boringssl-static:${ext['netty-boringssl.version']}"
+            dependency 'io.netty:netty-tcnative:2.0.14.Final'
             dependency "io.micrometer:micrometer-core:${ext['micrometer.version']}"
             dependency "org.assertj:assertj-core:${ext['assertj.version']}"
             dependency "org.hdrhistogram:HdrHistogram:${ext['hdrhistogram.version']}"
@@ -100,7 +100,6 @@ subprojects {
             options.with {
                 links 'https://docs.oracle.com/javase/8/docs/api/'
                 links 'https://projectreactor.io/docs/core/release/api/'
-                links 'https://netty.io/4.1/api/'
             }
         }
 

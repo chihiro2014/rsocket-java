@@ -16,21 +16,24 @@
 
 package io.rsocket;
 
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+
 final class StreamIdSupplier {
 
-  private int streamId;
+  private static final AtomicIntegerFieldUpdater<StreamIdSupplier> STREAM_ID =
+      AtomicIntegerFieldUpdater.newUpdater(StreamIdSupplier.class, "streamId");
+  private volatile int streamId;
 
   private StreamIdSupplier(int streamId) {
     this.streamId = streamId;
   }
 
-  synchronized int nextStreamId() {
-    streamId += 2;
-    return streamId;
+  int nextStreamId() {
+    return STREAM_ID.addAndGet(this, 2);
   }
 
-  synchronized boolean isBeforeOrCurrent(int streamId) {
-    return this.streamId >= streamId && streamId > 0;
+  boolean isBeforeOrCurrent(int streamId) {
+    return STREAM_ID.get(this) >= streamId && streamId > 0;
   }
 
   static StreamIdSupplier clientSupplier() {

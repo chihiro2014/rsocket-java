@@ -16,18 +16,27 @@
 
 package io.rsocket;
 
+import io.netty.util.collection.LongObjectHashMap;
+import io.netty.util.collection.LongObjectMap;
 import io.rsocket.exceptions.ConnectionErrorException;
 import io.rsocket.exceptions.Exceptions;
 import io.rsocket.framing.FrameType;
 import io.rsocket.internal.LimitableRequestPublisher;
+import io.rsocket.internal.TransmitProcessor;
 import io.rsocket.internal.UnboundedProcessor;
 
 import java.nio.channels.ClosedChannelException;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
+
+import org.agrona.collections.Int2ObjectHashMap;
+import org.jctools.maps.NonBlockingHashMap;
 import org.jctools.maps.NonBlockingHashMapLong;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
@@ -40,8 +49,8 @@ class RSocketClient implements RSocket {
   private final Function<Frame, ? extends Payload> frameDecoder;
   private final Consumer<Throwable> errorConsumer;
   private final StreamIdSupplier streamIdSupplier;
-  private final NonBlockingHashMapLong<LimitableRequestPublisher> senders;
-  private final NonBlockingHashMapLong<UnicastProcessor<Payload>> receivers;
+  private final Map<Integer, LimitableRequestPublisher> senders;
+  private final Map<Integer, TransmitProcessor<Payload>> receivers;
   private final UnboundedProcessor<Frame> sendProcessor;
   private KeepAliveHandler keepAliveHandler;
   private final Lifecycle lifecycle = new Lifecycle();
@@ -69,8 +78,8 @@ class RSocketClient implements RSocket {
     this.frameDecoder = frameDecoder;
     this.errorConsumer = errorConsumer;
     this.streamIdSupplier = streamIdSupplier;
-    this.senders = new NonBlockingHashMapLong<>(256);
-    this.receivers = new NonBlockingHashMapLong<>(256);
+    this.senders = Collections.synchronizedMap(new Int2ObjectHashMap<>());
+    this.receivers = Collections.synchronizedMap(new Int2ObjectHashMap<>());
 
     // DO NOT Change the order here. The Send processor must be subscribed to before receiving
     this.sendProcessor = new UnboundedProcessor<>();
@@ -206,8 +215,8 @@ class RSocketClient implements RSocket {
             Flux.defer(
                 () -> {
                   int streamId = streamIdSupplier.nextStreamId();
-
-                  UnicastProcessor<Payload> receiver = UnicastProcessor.create();
+  
+                  TransmitProcessor<Payload> receiver = TransmitProcessor.create();
                   receivers.put(streamId, receiver);
 
                   AtomicBoolean first = new AtomicBoolean(false);
@@ -244,7 +253,7 @@ class RSocketClient implements RSocket {
                           });
                 }));
   }
-
+  
   private Mono<Payload> handleRequestResponse(final Payload payload) {
     return lifecycle
         .active()
@@ -255,8 +264,8 @@ class RSocketClient implements RSocket {
                   final Frame requestFrame =
                       Frame.Request.from(streamId, FrameType.REQUEST_RESPONSE, payload, 1);
                   payload.release();
-
-                  UnicastProcessor<Payload> receiver = UnicastProcessor.create();
+  
+                  TransmitProcessor<Payload> receiver = TransmitProcessor.create();
                   receivers.put(streamId, receiver);
 
                   sendProcessor.onNext(requestFrame);
@@ -278,7 +287,7 @@ class RSocketClient implements RSocket {
         .thenMany(
             Flux.defer(
                 () -> {
-                  final UnicastProcessor<Payload> receiver = UnicastProcessor.create();
+                  final TransmitProcessor<Payload> receiver = TransmitProcessor.create();
                   final int streamId = streamIdSupplier.nextStreamId();
                   final AtomicBoolean firstRequest = new AtomicBoolean(true);
 
@@ -388,7 +397,7 @@ class RSocketClient implements RSocket {
       keepAliveHandler.dispose();
     }
     try {
-      for (UnicastProcessor<Payload> subscriber : receivers.values()) {
+      for (TransmitProcessor<Payload> subscriber : receivers.values()) {
         cleanUpSubscriber(subscriber);
       }
       for (LimitableRequestPublisher p : senders.values()) {
@@ -410,7 +419,7 @@ class RSocketClient implements RSocket {
     }
   }
 
-  private synchronized void cleanUpSubscriber(UnicastProcessor<?> subscriber) {
+  private synchronized void cleanUpSubscriber(TransmitProcessor<?> subscriber) {
     try {
         subscriber.onError(lifecycle.terminationError());
     } catch (Throwable t) {

@@ -16,27 +16,24 @@
 
 package io.rsocket;
 
-import static io.rsocket.frame.FrameHeaderFlyweight.FLAGS_M;
-
-import io.netty.buffer.*;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufHolder;
+import io.netty.buffer.Unpooled;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.IllegalReferenceCountException;
 import io.netty.util.Recycler;
 import io.netty.util.Recycler.Handle;
 import io.netty.util.ResourceLeakDetector;
-import io.rsocket.frame.ErrorFrameFlyweight;
-import io.rsocket.frame.FrameHeaderFlyweight;
-import io.rsocket.frame.KeepaliveFrameFlyweight;
-import io.rsocket.frame.LeaseFrameFlyweight;
-import io.rsocket.frame.RequestFrameFlyweight;
-import io.rsocket.frame.RequestNFrameFlyweight;
-import io.rsocket.frame.SetupFrameFlyweight;
-import io.rsocket.frame.VersionFlyweight;
+import io.rsocket.frame.*;
 import io.rsocket.framing.FrameType;
-import java.nio.charset.StandardCharsets;
-import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+import java.nio.charset.StandardCharsets;
+
+import static io.rsocket.frame.FrameHeaderFlyweight.FLAGS_M;
 
 /**
  * Represents a Frame sent over a {@link DuplexConnection}.
@@ -45,17 +42,47 @@ import org.slf4j.LoggerFactory;
  */
 public class Frame extends AbstractReferenceCounted implements Payload, ByteBufHolder {
   private static final Recycler<Frame> RECYCLER =
-      new Recycler<Frame>() {
-        protected Frame newObject(Handle<Frame> handle) {
-          return new Frame(handle);
-        }
-      };
-
+  new io.netty.util.Recycler<Frame>() {
+    protected Frame newObject(Handle<Frame> handle) {
+      return new Frame(handle);
+    }
+  };
+  
   private final Handle<Frame> handle;
   private ByteBuf content;
 
   private Frame(final Handle<Frame> handle) {
     this.handle = handle;
+  }
+
+  /**
+   * Acquire a free Frame backed by given ByteBuf
+   *
+   * @param content to use as backing buffer
+   * @return frame
+   */
+  public static Frame from(final ByteBuf content) {
+    final Frame frame = RECYCLER.get();
+    frame.setRefCnt(1);
+    frame.content = content;
+
+    return frame;
+  }
+
+  public static boolean isFlagSet(int flags, int checkedFlag) {
+    return (flags & checkedFlag) == checkedFlag;
+  }
+
+  public static int setFlag(int current, int toSet) {
+    return current | toSet;
+  }
+
+  public static void ensureFrameType(final FrameType frameType, final Frame frame) {
+    final FrameType typeInFrame = frame.getType();
+
+    if (typeInFrame != frameType) {
+      throw new AssertionError("expected " + frameType + ", but saw" + typeInFrame);
+    }
   }
 
   /** Return the content which is held by this {@link Frame}. */
@@ -192,28 +219,6 @@ public class Frame extends AbstractReferenceCounted implements Payload, ByteBufH
     return FrameHeaderFlyweight.flags(content);
   }
 
-  /**
-   * Acquire a free Frame backed by given ByteBuf
-   *
-   * @param content to use as backing buffer
-   * @return frame
-   */
-  public static Frame from(final ByteBuf content) {
-    final Frame frame = RECYCLER.get();
-    frame.setRefCnt(1);
-    frame.content = content;
-
-    return frame;
-  }
-
-  public static boolean isFlagSet(int flags, int checkedFlag) {
-    return (flags & checkedFlag) == checkedFlag;
-  }
-
-  public static int setFlag(int current, int toSet) {
-    return current | toSet;
-  }
-
   @Override
   public boolean hasMetadata() {
     return Frame.isFlagSet(this.flags(), FLAGS_M);
@@ -226,6 +231,86 @@ public class Frame extends AbstractReferenceCounted implements Payload, ByteBufH
    *
    */
 
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof Frame)) {
+      return false;
+    }
+    final Frame frame = (Frame) o;
+    return content.equals(frame.content());
+  }
+
+  @Override
+  public int hashCode() {
+    return content.hashCode();
+  }
+
+  @Override
+  public String toString() {
+    FrameType type = FrameHeaderFlyweight.frameType(content);
+    StringBuilder payload = new StringBuilder();
+    @Nullable ByteBuf metadata = FrameHeaderFlyweight.sliceFrameMetadata(content);
+
+    if (metadata != null) {
+      if (0 < metadata.readableBytes()) {
+        payload.append(
+            String.format("metadata: \"%s\" ", metadata.toString(StandardCharsets.UTF_8)));
+      }
+    }
+
+    ByteBuf data = FrameHeaderFlyweight.sliceFrameData(content);
+    if (0 < data.readableBytes()) {
+      payload.append(String.format("data: \"%s\" ", data.toString(StandardCharsets.UTF_8)));
+    }
+
+    long streamId = FrameHeaderFlyweight.streamId(content);
+
+    String additionalFlags = "";
+    switch (type) {
+      case LEASE:
+        additionalFlags = " Permits: " + Lease.numberOfRequests(this) + " TTL: " + Lease.ttl(this);
+        break;
+      case REQUEST_N:
+        additionalFlags = " RequestN: " + RequestN.requestN(this);
+        break;
+      case KEEPALIVE:
+        additionalFlags = " Respond flag: " + Keepalive.hasRespondFlag(this);
+        break;
+      case REQUEST_STREAM:
+      case REQUEST_CHANNEL:
+        additionalFlags = " Initial Request N: " + Request.initialRequestN(this);
+        break;
+      case ERROR:
+        additionalFlags = " Error code: " + Error.errorCode(this);
+        break;
+      case SETUP:
+        int version = Setup.version(this);
+        additionalFlags =
+            " Version: "
+                + VersionFlyweight.toString(version)
+                + " keep-alive interval: "
+                + Setup.keepaliveInterval(this)
+                + " max lifetime: "
+                + Setup.maxLifetime(this)
+                + " metadata mime type: "
+                + Setup.metadataMimeType(this)
+                + " data mime type: "
+                + Setup.dataMimeType(this);
+        break;
+    }
+
+    return "Frame => Stream ID: "
+        + streamId
+        + " Type: "
+        + type
+        + additionalFlags
+        + " Payload: "
+        + payload;
+  }
+  
   // SETUP specific getters
   public static class Setup {
 
@@ -366,7 +451,7 @@ public class Frame extends AbstractReferenceCounted implements Payload, ByteBufH
     private RequestN() {}
 
     public static Frame from(int streamId, long requestN) {
-      int v = requestN > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) requestN;
+      int v = (int) Math.min(Integer.MAX_VALUE, requestN);
       return from(streamId, v);
     }
 
@@ -392,7 +477,7 @@ public class Frame extends AbstractReferenceCounted implements Payload, ByteBufH
     private Request() {}
 
     public static Frame from(int streamId, FrameType type, Payload payload, long initialRequestN) {
-      int v = initialRequestN > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) initialRequestN;
+      int v = (int) Math.min(Integer.MAX_VALUE, initialRequestN);
       return from(streamId, type, payload, v);
     }
 
@@ -564,93 +649,5 @@ public class Frame extends AbstractReferenceCounted implements Payload, ByteBufH
       return (flags & KeepaliveFrameFlyweight.FLAGS_KEEPALIVE_R)
           == KeepaliveFrameFlyweight.FLAGS_KEEPALIVE_R;
     }
-  }
-
-  public static void ensureFrameType(final FrameType frameType, final Frame frame) {
-    final FrameType typeInFrame = frame.getType();
-
-    if (typeInFrame != frameType) {
-      throw new AssertionError("expected " + frameType + ", but saw" + typeInFrame);
-    }
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o) {
-      return true;
-    }
-    if (!(o instanceof Frame)) {
-      return false;
-    }
-    final Frame frame = (Frame) o;
-    return content.equals(frame.content());
-  }
-
-  @Override
-  public int hashCode() {
-    return content.hashCode();
-  }
-
-  @Override
-  public String toString() {
-    FrameType type = FrameHeaderFlyweight.frameType(content);
-    StringBuilder payload = new StringBuilder();
-    @Nullable ByteBuf metadata = FrameHeaderFlyweight.sliceFrameMetadata(content);
-
-    if (metadata != null) {
-      if (0 < metadata.readableBytes()) {
-        payload.append(
-            String.format("metadata: \"%s\" ", metadata.toString(StandardCharsets.UTF_8)));
-      }
-    }
-
-    ByteBuf data = FrameHeaderFlyweight.sliceFrameData(content);
-    if (0 < data.readableBytes()) {
-      payload.append(String.format("data: \"%s\" ", data.toString(StandardCharsets.UTF_8)));
-    }
-
-    long streamId = FrameHeaderFlyweight.streamId(content);
-
-    String additionalFlags = "";
-    switch (type) {
-      case LEASE:
-        additionalFlags = " Permits: " + Lease.numberOfRequests(this) + " TTL: " + Lease.ttl(this);
-        break;
-      case REQUEST_N:
-        additionalFlags = " RequestN: " + RequestN.requestN(this);
-        break;
-      case KEEPALIVE:
-        additionalFlags = " Respond flag: " + Keepalive.hasRespondFlag(this);
-        break;
-      case REQUEST_STREAM:
-      case REQUEST_CHANNEL:
-        additionalFlags = " Initial Request N: " + Request.initialRequestN(this);
-        break;
-      case ERROR:
-        additionalFlags = " Error code: " + Error.errorCode(this);
-        break;
-      case SETUP:
-        int version = Setup.version(this);
-        additionalFlags =
-            " Version: "
-                + VersionFlyweight.toString(version)
-                + " keep-alive interval: "
-                + Setup.keepaliveInterval(this)
-                + " max lifetime: "
-                + Setup.maxLifetime(this)
-                + " metadata mime type: "
-                + Setup.metadataMimeType(this)
-                + " data mime type: "
-                + Setup.dataMimeType(this);
-        break;
-    }
-
-    return "Frame => Stream ID: "
-        + streamId
-        + " Type: "
-        + type
-        + additionalFlags
-        + " Payload: "
-        + payload;
   }
 }

@@ -24,9 +24,17 @@ import io.rsocket.exceptions.ApplicationErrorException;
 import io.rsocket.exceptions.ConnectionErrorException;
 import io.rsocket.framing.FrameType;
 import io.rsocket.internal.LimitableRequestPublisher;
+import io.rsocket.internal.TransmitProcessor;
 import io.rsocket.internal.UnboundedProcessor;
+
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Function;
+
+import org.agrona.collections.Int2ObjectHashMap;
+import org.jctools.maps.NonBlockingHashMap;
 import org.jctools.maps.NonBlockingHashMapLong;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
@@ -42,8 +50,8 @@ class RSocketServer implements RSocket {
   private final Function<Frame, ? extends Payload> frameDecoder;
   private final Consumer<Throwable> errorConsumer;
 
-  private final NonBlockingHashMapLong<Subscription> sendingSubscriptions;
-  private final NonBlockingHashMapLong<UnicastProcessor<Payload>> channelProcessors;
+  private final Map<Integer, Subscription> sendingSubscriptions;
+  private final  Map<Integer, TransmitProcessor<Payload>> channelProcessors;
 
   private final UnboundedProcessor<Frame> sendProcessor;
   private KeepAliveHandler keepAliveHandler;
@@ -69,8 +77,8 @@ class RSocketServer implements RSocket {
     this.requestHandler = requestHandler;
     this.frameDecoder = frameDecoder;
     this.errorConsumer = errorConsumer;
-    this.sendingSubscriptions = new NonBlockingHashMapLong<>();
-    this.channelProcessors = new NonBlockingHashMapLong<>();
+    this.sendingSubscriptions = Collections.synchronizedMap(new Int2ObjectHashMap<>());
+    this.channelProcessors = Collections.synchronizedMap(new Int2ObjectHashMap<>());
 
     // DO NOT Change the order here. The Send processor must be subscribed to before receiving
     // connections
@@ -120,7 +128,7 @@ class RSocketServer implements RSocket {
       }
     }
 
-    for (UnicastProcessor subscription : channelProcessors.values()) {
+    for (TransmitProcessor subscription : channelProcessors.values()) {
       try {
         subscription.cancel();
       } catch (Throwable e) {
@@ -142,7 +150,7 @@ class RSocketServer implements RSocket {
       }
     }
 
-    for (UnicastProcessor subscription : channelProcessors.values()) {
+    for (TransmitProcessor subscription : channelProcessors.values()) {
       try {
         subscription.cancel();
       } catch (Throwable e) {
@@ -360,7 +368,7 @@ class RSocketServer implements RSocket {
   }
 
   private void handleChannel(int streamId, Payload payload, int initialRequestN) {
-    UnicastProcessor<Payload> frames = UnicastProcessor.create();
+    TransmitProcessor<Payload> frames = TransmitProcessor.create();
     channelProcessors.put(streamId, frames);
 
     Flux<Payload> payloads =

@@ -16,22 +16,39 @@
 
 package io.rsocket.transport.netty;
 
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.rsocket.Frame;
 import io.rsocket.RSocket;
 import io.rsocket.RSocketFactory;
 import io.rsocket.test.PingClient;
 import io.rsocket.transport.netty.client.TcpClientTransport;
-import java.time.Duration;
 import org.HdrHistogram.Recorder;
 import reactor.core.publisher.Mono;
+import reactor.netty.tcp.TcpClient;
+
+import javax.net.ssl.SSLContext;
+import java.time.Duration;
 
 public final class TcpPing {
 
-  public static void main(String... args) {
+  public static void main(String... args) throws Exception {
+    SSLContext context = SSLContext.getInstance("TLSv1.3");
+    SSLContext.setDefault(context);
+    final SslContext sslContext =
+        SslContextBuilder.forClient()
+            .trustManager(InsecureTrustManagerFactory.INSTANCE)
+            .sslProvider(SslProvider.OPENSSL_REFCNT)
+            .build();
+
+    TcpClient tcpClient = TcpClient.create().port(7878);//.secure(sslContext);
+
     Mono<RSocket> client =
         RSocketFactory.connect()
             .frameDecoder(Frame::retain)
-            .transport(TcpClientTransport.create(7878))
+            .transport(TcpClientTransport.create(tcpClient))
             .start();
 
     PingClient pingClient = new PingClient(client);

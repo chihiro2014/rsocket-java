@@ -82,4 +82,5 @@ public class StreamIdSupplierTest {
     // client also accepted (checked externally)
     assertTrue(s.isBeforeOrCurrent(1));
   }
+  
 }

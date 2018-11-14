@@ -86,47 +86,6 @@ public class ClientServerInputMultiplexer implements Closeable {
               LOGGER.error("test", t);
               dispose();
             });
-
-    /*
-    source
-        .receive()
-        .groupBy(
-            frame -> {
-              int streamId = frame.getStreamId();
-              final Type type;
-              if (streamId == 0) {
-                if (frame.getType() == FrameType.SETUP) {
-                  type = Type.STREAM_ZERO;
-                } else {
-                  type = Type.CLIENT;
-                }
-              } else if ((streamId & 0b1) == 0) {
-                type = Type.SERVER;
-              } else {
-                type = Type.CLIENT;
-              }
-              return type;
-            })
-        .subscribe(
-            group -> {
-              switch (group.key()) {
-                case STREAM_ZERO:
-                  streamZero.onNext(group);
-                  break;
-
-                case SERVER:
-                  server.onNext(group);
-                  break;
-
-                case CLIENT:
-                  client.onNext(group);
-                  break;
-              }
-            },
-            t -> {
-              LOGGER.error("test", t);
-              dispose();
-            });*/
   }
 
   public DuplexConnection asServerConnection() {

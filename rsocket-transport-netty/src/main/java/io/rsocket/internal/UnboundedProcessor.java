@@ -22,6 +22,7 @@ import java.util.Queue;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 
+import io.netty.util.internal.shaded.org.jctools.queues.MpscChunkedArrayQueue;
 import io.netty.util.internal.shaded.org.jctools.queues.MpscUnboundedArrayQueue;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
@@ -72,7 +73,7 @@ public final class UnboundedProcessor<T> extends FluxProcessor<T, T>
         AtomicLongFieldUpdater.newUpdater(UnboundedProcessor.class, "requested");
     
     public UnboundedProcessor() {
-        this.queue = new MpscUnboundedArrayQueue<>(1024);
+        this.queue =new MpscChunkedArrayQueue(1024, 1 << 20); //new MpscUnboundedArrayQueue<>(1024);
     }
     
     @Override

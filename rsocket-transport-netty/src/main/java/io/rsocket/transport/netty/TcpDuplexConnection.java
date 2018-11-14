@@ -16,10 +16,6 @@
 
 package io.rsocket.transport.netty;
 
-import java.util.Objects;
-import java.util.function.Function;
-
-import io.netty.buffer.ByteBuf;
 import io.rsocket.DuplexConnection;
 import io.rsocket.Frame;
 import org.reactivestreams.Publisher;
@@ -28,9 +24,10 @@ import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.NettyOutbound;
 
+import java.util.Objects;
+
 /** An implementation of {@link DuplexConnection} that connects via TCP. */
-public final class TcpDuplexConnection implements DuplexConnection, Function<ByteBuf,
-        Publisher<Void>> {
+public final class TcpDuplexConnection implements DuplexConnection {
 
   private final Connection connection;
   private final NettyOutbound outbound;
@@ -69,7 +66,7 @@ public final class TcpDuplexConnection implements DuplexConnection, Function<Byt
   public Mono<Void> send(Publisher<Frame> frames) {
     return Flux.from(frames)
         .map(Frame::content)
-        .flatMapSequential(this, 256, Integer.MAX_VALUE)
+        .flatMapSequential(outbound::sendObject, 256, Integer.MAX_VALUE)
         .then();
   }
 
@@ -78,8 +75,4 @@ public final class TcpDuplexConnection implements DuplexConnection, Function<Byt
     return outbound.sendObject(frame.content()).then();
   }
 
-  @Override
-  public Publisher<Void> apply(ByteBuf frame) {
-    return outbound.sendObject(frame);
-  }
 }

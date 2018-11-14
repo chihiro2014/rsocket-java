@@ -21,9 +21,7 @@ import io.netty.util.collection.LongObjectMap;
 import io.rsocket.exceptions.ConnectionErrorException;
 import io.rsocket.exceptions.Exceptions;
 import io.rsocket.framing.FrameType;
-import io.rsocket.internal.LimitableRequestPublisher;
-import io.rsocket.internal.TransmitProcessor;
-import io.rsocket.internal.UnboundedProcessor;
+import io.rsocket.internal.*;
 
 import java.nio.channels.ClosedChannelException;
 import java.time.Duration;
@@ -49,8 +47,8 @@ class RSocketClient implements RSocket {
   private final Function<Frame, ? extends Payload> frameDecoder;
   private final Consumer<Throwable> errorConsumer;
   private final StreamIdSupplier streamIdSupplier;
-  private final Map<Integer, LimitableRequestPublisher> senders;
-  private final Map<Integer, TransmitProcessor<Payload>> receivers;
+  private final AtomicInt2ObjectHashMap<LimitableRequestPublisher> senders;
+  private final AtomicInt2ObjectHashMap<TransmitProcessor<Payload>> receivers;
   private final UnboundedProcessor<Frame> sendProcessor;
   private KeepAliveHandler keepAliveHandler;
   private final Lifecycle lifecycle = new Lifecycle();
@@ -78,8 +76,8 @@ class RSocketClient implements RSocket {
     this.frameDecoder = frameDecoder;
     this.errorConsumer = errorConsumer;
     this.streamIdSupplier = streamIdSupplier;
-    this.senders = Collections.synchronizedMap(new Int2ObjectHashMap<>());
-    this.receivers = Collections.synchronizedMap(new Int2ObjectHashMap<>());
+    this.senders = new AtomicInt2ObjectHashMap<>();
+    this.receivers = new AtomicInt2ObjectHashMap<>();
 
     // DO NOT Change the order here. The Send processor must be subscribed to before receiving
     this.sendProcessor = new UnboundedProcessor<>();

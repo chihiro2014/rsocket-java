@@ -16,31 +16,26 @@
 
 package io.rsocket;
 
-import static io.rsocket.Frame.Request.initialRequestN;
-import static io.rsocket.frame.FrameHeaderFlyweight.FLAGS_C;
-import static io.rsocket.frame.FrameHeaderFlyweight.FLAGS_M;
-
 import io.rsocket.exceptions.ApplicationErrorException;
 import io.rsocket.exceptions.ConnectionErrorException;
 import io.rsocket.framing.FrameType;
-import io.rsocket.internal.LimitableRequestPublisher;
-import io.rsocket.internal.TransmitProcessor;
-import io.rsocket.internal.UnboundedProcessor;
-
-import java.util.Collections;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
-import java.util.function.Function;
-
+import io.rsocket.internal.*;
 import org.agrona.collections.Int2ObjectHashMap;
-import org.jctools.maps.NonBlockingHashMap;
-import org.jctools.maps.NonBlockingHashMapLong;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.Disposable;
-import reactor.core.publisher.*;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
+
+import java.util.Collections;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+import static io.rsocket.Frame.Request.initialRequestN;
+import static io.rsocket.frame.FrameHeaderFlyweight.FLAGS_C;
+import static io.rsocket.frame.FrameHeaderFlyweight.FLAGS_M;
 
 /** Server side RSocket. Receives {@link Frame}s from a {@link RSocketClient} */
 class RSocketServer implements RSocket {
@@ -50,8 +45,8 @@ class RSocketServer implements RSocket {
   private final Function<Frame, ? extends Payload> frameDecoder;
   private final Consumer<Throwable> errorConsumer;
 
-  private final Map<Integer, Subscription> sendingSubscriptions;
-  private final  Map<Integer, TransmitProcessor<Payload>> channelProcessors;
+  private final AtomicInt2ObjectHashMap<Subscription> sendingSubscriptions;
+  private final  AtomicInt2ObjectHashMap<TransmitProcessor<Payload>> channelProcessors;
 
   private final UnboundedProcessor<Frame> sendProcessor;
   private KeepAliveHandler keepAliveHandler;
@@ -77,8 +72,8 @@ class RSocketServer implements RSocket {
     this.requestHandler = requestHandler;
     this.frameDecoder = frameDecoder;
     this.errorConsumer = errorConsumer;
-    this.sendingSubscriptions = Collections.synchronizedMap(new Int2ObjectHashMap<>());
-    this.channelProcessors = Collections.synchronizedMap(new Int2ObjectHashMap<>());
+    this.sendingSubscriptions = new AtomicInt2ObjectHashMap<>();
+    this.channelProcessors = new AtomicInt2ObjectHashMap<>();
 
     // DO NOT Change the order here. The Send processor must be subscribed to before receiving
     // connections

@@ -68,13 +68,13 @@ import static reactor.netty.ReactorNetty.format;
  * @author Stephane Maldini
  */
 final class ChannelOperationsHandler extends ChannelDuplexHandler
-    implements NettyPipeline.SendOptions, ChannelFutureListener {
-    
+        implements NettyPipeline.SendOptions, ChannelFutureListener, Runnable {
+
     final PublisherSender           inner;
     final int                       prefetch;
     final ConnectionObserver        listener;
     final ChannelOperations.OnSetup opsFactory;
-    
+
     /**
      * Cast the supplied queue (SpscLinkedArrayQueue) to use its atomic dual-insert
      * backed by {@link BiPredicate#test}
@@ -84,16 +84,16 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
     ChannelHandlerContext               ctx;
     boolean                             flushOnEach;
     boolean                             flushOnEachWithEventLoop;
-    
+
     long                                pendingBytes;
-    
+
     private Unsafe                      unsafe;
-    
+
     volatile boolean innerActive;
     volatile boolean removed;
     volatile int     wip;
     volatile long    scheduledFlush;
-    
+
     @SuppressWarnings("unchecked")
     ChannelOperationsHandler(ChannelOperations.OnSetup opsFactory, ConnectionObserver listener) {
         this.inner = new PublisherSender(this);
@@ -101,7 +101,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
         this.listener = listener;
         this.opsFactory = opsFactory;
     }
-    
+
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
         Connection c = Connection.from(ctx.channel());
@@ -112,7 +112,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             listener.onStateChange(ops, ConnectionObserver.State.CONFIGURED);
         }
     }
-    
+
     @Override
     final public void channelInactive(ChannelHandlerContext ctx) {
         try {
@@ -129,7 +129,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             exceptionCaught(ctx, err);
         }
     }
-    
+
     @Override
     final public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg == null || msg == Unpooled.EMPTY_BUFFER || msg instanceof EmptyByteBuf) {
@@ -147,15 +147,15 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                         DecoderResult decoderResult = ((DecoderResultProvider) msg).decoderResult();
                         if (decoderResult.isFailure()) {
                             log.debug(format(ctx.channel(), "Decoding failed: " + msg + " : "),
-                                decoderResult.cause());
+                                    decoderResult.cause());
                         }
                     }
                     if (msg instanceof ByteBufHolder && ((ByteBufHolder)msg).content() != Unpooled.EMPTY_BUFFER) {
                         loggingMsg = ((ByteBufHolder) msg).content()
-                                         .toString(Charset.defaultCharset());
+                                                          .toString(Charset.defaultCharset());
                     }
                     log.debug(format(ctx.channel(), "No ChannelOperation attached. Dropping: {}"),
-                        loggingMsg);
+                            loggingMsg);
                 }
                 ReferenceCountUtil.release(msg);
             }
@@ -166,17 +166,17 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             ReferenceCountUtil.safeRelease(msg);
         }
     }
-    
+
     @Override
     public void channelWritabilityChanged(ChannelHandlerContext ctx) {
         if (log.isDebugEnabled()) {
             log.debug(format(ctx.channel(), "Write state change {}"),
-                ctx.channel()
-                    .isWritable());
+                    ctx.channel()
+                       .isWritable());
         }
         drain();
     }
-    
+
     @Override
     final public void exceptionCaught(ChannelHandlerContext ctx, Throwable err) {
         Exceptions.throwIfJvmFatal(err);
@@ -188,29 +188,29 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             listener.onUncaughtException(Connection.from(ctx.channel()), err);
         }
     }
-    
+
     @Override
     public void flush(ChannelHandlerContext ctx) {
         drain();
     }
-    
+
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) {
         this.ctx = ctx;
         this.unsafe = ctx.channel().unsafe();
         inner.request(prefetch);
     }
-    
+
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
         if (!removed) {
             removed = true;
-            
+
             inner.cancel();
             drain();
         }
     }
-    
+
     @Override
     final public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
         if (log.isTraceEnabled()) {
@@ -221,60 +221,60 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 log.debug(format(ctx.channel(), "New sending options"));
             }
             ((NettyPipeline.SendOptionsChangeEvent) evt).configurator()
-                .accept(this);
+                                                        .accept(this);
             return;
         }
-        
+
         ctx.fireUserEventTriggered(evt);
     }
-    
+
     @Override
     @SuppressWarnings({"unchecked", "FutureReturnValueIgnored"})
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
         if (log.isDebugEnabled() && msg != ChannelOperations.TERMINATED_OPS) {
             log.debug(format(ctx.channel(), "Writing object {}"), msg);
         }
-        
+
         if (pendingWrites == null) {
             this.pendingWrites = Queues.unbounded()
-                                     .get();
+                                       .get();
             this.pendingWriteOffer = (BiPredicate<ChannelFuture, Object>) pendingWrites;
         }
-        
+
         if (!pendingWriteOffer.test(promise, msg)) {
             // Returned value is deliberately ignored
             promise.setFailure(new IllegalStateException("Send Queue full?!"));
         }
     }
-    
+
     @Override
     public NettyPipeline.SendOptions flushOnBoundary() {
         flushOnEach = false;
         return this;
     }
-    
+
     @Override
     public NettyPipeline.SendOptions flushOnEach(boolean withEventLoop) {
         flushOnEach = true;
         flushOnEachWithEventLoop = withEventLoop;
         return this;
     }
-    
+
     @Override
     public void operationComplete(ChannelFuture future) {
         if (future.isSuccess()) {
             inner.request(1L);
         }
     }
-    
+
     ChannelFuture doWrite(Object msg, ChannelPromise promise, @Nullable PublisherSender inner) {
         if (flushOnEach || //fastpath
                 (inner == null && pendingWrites.isEmpty()) || //last drained element
                 !ctx.channel()
-                     .isWritable() //force flush if write buffer full
+                    .isWritable() //force flush if write buffer full
         ) {
             pendingBytes = 0L;
-            
+
             ChannelFuture future = ctx.write(msg, promise);
             scheduleFlush();
             return future;
@@ -282,12 +282,12 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
         else {
             if (msg instanceof ByteBuf) {
                 pendingBytes =
-                    Operators.addCap(pendingBytes, ((ByteBuf) msg).readableBytes());
+                        Operators.addCap(pendingBytes, ((ByteBuf) msg).readableBytes());
             }
             else if (msg instanceof ByteBufHolder) {
                 pendingBytes = Operators.addCap(pendingBytes,
-                    ((ByteBufHolder) msg).content()
-                        .readableBytes());
+                        ((ByteBufHolder) msg).content()
+                                             .readableBytes());
             }
             else if (msg instanceof FileRegion) {
                 pendingBytes = Operators.addCap(pendingBytes, ((FileRegion) msg).count());
@@ -303,35 +303,40 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             return future;
         }
     }
-    
+
     void scheduleFlush() {
         if (SCHEDULED_FLUSH.getAndIncrement(this) == 0) {
             ctx.channel()
-                .eventLoop()
-                .execute(() -> {
-                    long missed = scheduledFlush;
-                    for(;;) {
-                        if (hasPendingWriteBytes()) {
-                            ctx.flush();
-                        }
-                        missed = SCHEDULED_FLUSH.addAndGet(this, -missed);
-                        if (missed == 0) {
-                            break;
-                        }
-                    }
-                });
+               .eventLoop()
+               .execute(this);
         }
     }
-    
+
+    @Override
+    public void run() {
+        long missed = scheduledFlush;
+        for(;;) {
+//            if (missed > 1)
+//                System.out.println("Conflating "+missed + " Flush");
+            missed = SCHEDULED_FLUSH.addAndGet(this, -missed);
+            if (missed == 0) {
+                if (hasPendingWriteBytes()) {
+                    ctx.flush();
+                }
+                break;
+            }
+        }
+    }
+
     void discard() {
         for (; ; ) {
             if (pendingWrites == null || pendingWrites.isEmpty()) {
                 return;
             }
-            
+
             ChannelPromise promise;
             Object v = pendingWrites.poll();
-            
+
             try {
                 promise = (ChannelPromise) v;
             }
@@ -345,37 +350,39 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             }
             if (log.isDebugEnabled()) {
                 log.debug(format(ctx.channel(), "Terminated ChannelOperation. Dropping Pending Write: {}"),
-                    v);
+                        v);
             }
             ReferenceCountUtil.release(v);
             promise.tryFailure(new AbortedException("Connection has been closed"));
         }
     }
-    
+
+
     @SuppressWarnings({"unchecked", "FutureReturnValueIgnored"})
     void drain() {
         if (WIP.getAndIncrement(this) == 0) {
-            
+            int missed = 1;
+
             for (; ; ) {
                 if (removed) {
                     discard();
                     return;
                 }
-                
+
                 if (pendingWrites == null || innerActive || !ctx.channel()
-                                                                 .isWritable()) {
+                                                                .isWritable()) {
                     if (!ctx.channel().isWritable() && hasPendingWriteBytes()) {
                         ctx.flush();
                     }
-                    if (WIP.decrementAndGet(this) == 0) {
+                    if ((missed = WIP.addAndGet(this, -missed)) == 0) {
                         break;
                     }
                     continue;
                 }
-                
+
                 ChannelFuture future;
                 Object v = pendingWrites.poll();
-                
+
                 try {
                     future = (ChannelFuture) v;
                 }
@@ -383,18 +390,18 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                     ctx.fireExceptionCaught(e);
                     return;
                 }
-                
+
                 boolean empty = future == null;
-                
+
                 if (empty) {
-                    if (WIP.decrementAndGet(this) == 0) {
+                    if ((missed = WIP.addAndGet(this, -missed)) == 0) {
                         break;
                     }
                     continue;
                 }
-                
+
                 v = pendingWrites.poll();
-                
+
                 if (!innerActive && v == PublisherSender.PENDING_WRITES) {
                     boolean last = pendingWrites.isEmpty();
                     if (!future.isDone() && hasPendingWriteBytes()) {
@@ -406,7 +413,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                             }
                         }
                     }
-                    if (last && WIP.decrementAndGet(this) == 0) {
+                    if (last && (missed = WIP.addAndGet(this, -missed)) == 0) {
                         break;
                     }
                 }
@@ -417,13 +424,13 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                     }
                     else if (v instanceof Publisher) {
                         Publisher<?> p = (Publisher<?>) v;
-                        
+
                         if (p instanceof Callable) {
                             @SuppressWarnings("unchecked") Callable<?> supplier =
-                                (Callable<?>) p;
-                            
+                                    (Callable<?>) p;
+
                             Object vr;
-                            
+
                             try {
                                 vr = supplier.call();
                             }
@@ -432,13 +439,13 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                                 promise.setFailure(e);
                                 continue;
                             }
-                            
+
                             if (vr == null) {
                                 // Returned value is deliberately ignored
                                 promise.setSuccess();
                                 continue;
                             }
-                            
+
                             if (inner.unbounded) {
                                 // Returned value is deliberately ignored
                                 doWrite(vr, promise, null);
@@ -463,25 +470,25 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             }
         }
     }
-    
+
     private boolean hasPendingWriteBytes() {
         // On close the outboundBuffer is made null. After that point
         // adding messages and flushes to outboundBuffer is not allowed.
         ChannelOutboundBuffer outBuffer = this.unsafe.outboundBuffer();
         return outBuffer != null && outBuffer.totalPendingWriteBytes() > 0;
     }
-    
+
     static final class PublisherSender
-        implements CoreSubscriber<Object>, Subscription, ChannelFutureListener,
+            implements CoreSubscriber<Object>, Subscription, ChannelFutureListener,
                        Consumer<ChannelFuture> {
-        
+
         final ChannelOperationsHandler parent;
-        
+
         volatile Subscription missedSubscription;
         volatile long         missedRequested;
         volatile long         missedProduced;
         volatile int          wip;
-        
+
         boolean        inactive;
         /**
          * The current outstanding request amount.
@@ -496,11 +503,11 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
         ChannelPromise promise;
         ChannelFuture  lastWrite;
         boolean        lastThreadInEventLoop;
-        
+
         PublisherSender(ChannelOperationsHandler parent) {
             this.parent = parent;
         }
-        
+
         @Override
         public void accept(ChannelFuture cf) {
             //current subscription stop
@@ -509,7 +516,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 drain();
             }
         }
-        
+
         @Override
         @SuppressWarnings("unchecked")
         public Context currentContext() {
@@ -519,36 +526,36 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             }
             return Context.empty();
         }
-        
+
         @Override
         public final void cancel() {
             //full stop
             if (!inactive) {
                 inactive = true;
-                
+
                 drain();
             }
         }
-        
+
         @Override
         @SuppressWarnings("FutureReturnValueIgnored")
         public void onComplete() {
             long p = produced;
             ChannelFuture f = lastWrite;
             parent.innerActive = false;
-            
+
             if (p != 0L) {
                 if (parent.pendingBytes > 0L || parent.hasPendingWriteBytes() || !lastThreadInEventLoop) {
                     if (parent.ctx.channel()
-                            .isActive()) {
+                                  .isActive()) {
                         parent.pendingBytes = 0L;
                         if (lastThreadInEventLoop) {
                             parent.ctx.flush();
                         }
                         else {
                             parent.ctx.channel()
-                                .eventLoop()
-                                .execute(() -> parent.ctx.flush());
+                                      .eventLoop()
+                                      .execute(() -> parent.ctx.flush());
                         }
                     }
                     else {
@@ -558,7 +565,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                     }
                 }
             }
-            
+
             if (f != null) {
                 if (!f.isDone() && (parent.hasPendingWriteBytes() || !lastThreadInEventLoop)) {
                     EventLoop eventLoop = parent.ctx.channel().eventLoop();
@@ -589,24 +596,24 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 parent.drain();
             }
         }
-        
+
         @Override
         @SuppressWarnings("FutureReturnValueIgnored")
         public void onError(Throwable t) {
             long p = produced;
             ChannelFuture f = lastWrite;
             parent.innerActive = false;
-            
+
             if (p != 0L) {
                 if (parent.ctx.channel()
-                        .isActive()) {
+                              .isActive()) {
                     if (lastThreadInEventLoop) {
                         parent.ctx.flush();
                     }
                     else {
                         parent.ctx.channel()
-                            .eventLoop()
-                            .execute(() -> parent.ctx.flush());
+                                  .eventLoop()
+                                  .execute(() -> parent.ctx.flush());
                     }
                 }
                 else {
@@ -615,7 +622,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                     return;
                 }
             }
-            
+
             if (f != null) {
                 if (!f.isDone() && (parent.hasPendingWriteBytes() || !lastThreadInEventLoop)) {
                     EventLoop eventLoop = parent.ctx.channel().eventLoop();
@@ -654,7 +661,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 parent.drain();
             }
         }
-        
+
         @Override
         public void onNext(Object t) {
             ChannelPromise newPromise = parent.ctx.newPromise();
@@ -664,59 +671,59 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
             }
             else {
                 parent.ctx.channel()
-                    .eventLoop()
-                    .execute(() -> onNextInternal(t, newPromise));
+                          .eventLoop()
+                          .execute(() -> onNextInternal(t, newPromise));
                 lastThreadInEventLoop = false;
             }
-            
+
             lastWrite = newPromise;
         }
-        
+
         @SuppressWarnings("FutureReturnValueIgnored")
         private void onNextInternal(Object t, ChannelPromise promise) {
             produced++;
-            
+
             // Returned value is deliberately ignored
             parent.doWrite(t, promise, this);
-            
+
             if (parent.ctx.channel()
-                    .isWritable()) {
+                          .isWritable()) {
                 request(1L);
             }
             else {
                 promise.addListener(parent);
             }
         }
-        
+
         @Override
         public void onSubscribe(Subscription s) {
             if (inactive) {
                 s.cancel();
                 return;
             }
-            
+
             Objects.requireNonNull(s);
-            
+
             if (wip == 0 && WIP.compareAndSet(this, 0, 1)) {
                 actual = s;
-                
+
                 long r = requested;
-                
+
                 if (WIP.decrementAndGet(this) != 0) {
                     drainLoop();
                 }
-                
+
                 if (r != 0L) {
                     s.request(r);
                 }
-                
+
                 return;
             }
-            
+
             MISSED_SUBSCRIPTION.set(this, s);
             drain();
         }
-        
+
         @Override
         @SuppressWarnings("FutureReturnValueIgnored")
         public void operationComplete(ChannelFuture future) {
@@ -732,7 +739,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 promise.setFailure(future.cause());
             }
         }
-        
+
         @Override
         public final void request(long n) {
             if (Operators.validate(n)) {
@@ -741,7 +748,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 }
                 if (wip == 0 && WIP.compareAndSet(this, 0, 1)) {
                     long r = requested;
-                    
+
                     if (r != Long.MAX_VALUE) {
                         r = Operators.addCap(r, n);
                         requested = r;
@@ -750,44 +757,44 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                         }
                     }
                     Subscription a = actual;
-                    
+
                     if (WIP.decrementAndGet(this) != 0) {
                         drainLoop();
                     }
-                    
+
                     if (a != null) {
                         a.request(n);
                     }
-                    
+
                     return;
                 }
-                
+
                 Operators.addCap(MISSED_REQUESTED, this, n);
-                
+
                 drain();
             }
         }
-        
+
         final void drain() {
             if (WIP.getAndIncrement(this) != 0) {
                 return;
             }
             drainLoop();
         }
-        
+
         final void drainLoop() {
             int missed = 1;
-            
+
             long requestAmount = 0L;
             Subscription requestTarget = null;
-            
+
             for (; ; ) {
-                
+
                 Subscription ms = missedSubscription;
-                
+
                 if (ms != null) {
                     ms = MISSED_SUBSCRIPTION.getAndSet(this, null);
-                    
+
                     if (ms == Operators.cancelledSubscription()) {
                         parent.innerActive = false;
                         Subscription a = actual;
@@ -798,19 +805,19 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                         }
                     }
                 }
-                
+
                 long mr = missedRequested;
                 if (mr != 0L) {
                     mr = MISSED_REQUESTED.getAndSet(this, 0L);
                 }
-                
+
                 long mp = missedProduced;
                 if (mp != 0L) {
                     mp = MISSED_PRODUCED.getAndSet(this, 0L);
                 }
-                
+
                 Subscription a = actual;
-                
+
                 if (inactive) {
                     if (a != null) {
                         a.cancel();
@@ -825,7 +832,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                     long r = requested;
                     if (r != Long.MAX_VALUE) {
                         long u = Operators.addCap(r, mr);
-                        
+
                         if (u != Long.MAX_VALUE) {
                             long v = u - mp;
                             if (v < 0L) {
@@ -839,7 +846,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                         }
                         requested = r;
                     }
-                    
+
                     if (ms != null) {
                         actual = ms;
                         if (r != 0L) {
@@ -852,7 +859,7 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                         requestTarget = a;
                     }
                 }
-                
+
                 missed = WIP.addAndGet(this, -missed);
                 if (missed == 0) {
                     if (requestAmount != 0L) {
@@ -862,14 +869,14 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 }
             }
         }
-        
+
         final void produced(long n) {
             if (unbounded) {
                 return;
             }
             if (wip == 0 && WIP.compareAndSet(this, 0, 1)) {
                 long r = requested;
-                
+
                 if (r != Long.MAX_VALUE) {
                     long u = r - n;
                     if (u < 0L) {
@@ -881,53 +888,53 @@ final class ChannelOperationsHandler extends ChannelDuplexHandler
                 else {
                     unbounded = true;
                 }
-                
+
                 if (WIP.decrementAndGet(this) == 0) {
                     return;
                 }
-                
+
                 drainLoop();
-                
+
                 return;
             }
-            
+
             Operators.addCap(MISSED_PRODUCED, this, n);
-            
+
             drain();
         }
-        
+
         @SuppressWarnings("rawtypes")
         static final AtomicReferenceFieldUpdater<PublisherSender, Subscription>
-            MISSED_SUBSCRIPTION =
-            AtomicReferenceFieldUpdater.newUpdater(PublisherSender.class,
-                Subscription.class,
-                "missedSubscription");
+                                                                MISSED_SUBSCRIPTION =
+                AtomicReferenceFieldUpdater.newUpdater(PublisherSender.class,
+                        Subscription.class,
+                        "missedSubscription");
         @SuppressWarnings("rawtypes")
         static final AtomicLongFieldUpdater<PublisherSender>    MISSED_REQUESTED    =
-            AtomicLongFieldUpdater.newUpdater(PublisherSender.class,
-                "missedRequested");
+                AtomicLongFieldUpdater.newUpdater(PublisherSender.class,
+                        "missedRequested");
         @SuppressWarnings("rawtypes")
         static final AtomicLongFieldUpdater<PublisherSender>    MISSED_PRODUCED     =
-            AtomicLongFieldUpdater.newUpdater(PublisherSender.class,
-                "missedProduced");
+                AtomicLongFieldUpdater.newUpdater(PublisherSender.class,
+                        "missedProduced");
         @SuppressWarnings("rawtypes")
         static final AtomicIntegerFieldUpdater<PublisherSender> WIP                 =
-            AtomicIntegerFieldUpdater.newUpdater(PublisherSender.class, "wip");
-        
+                AtomicIntegerFieldUpdater.newUpdater(PublisherSender.class, "wip");
+
         private static final PendingWritesOnCompletion PENDING_WRITES = new PendingWritesOnCompletion();
     }
-    
+
     @SuppressWarnings("rawtypes")
     static final AtomicIntegerFieldUpdater<ChannelOperationsHandler> WIP =
-        AtomicIntegerFieldUpdater.newUpdater(ChannelOperationsHandler.class, "wip");
+            AtomicIntegerFieldUpdater.newUpdater(ChannelOperationsHandler.class, "wip");
     static final AtomicLongFieldUpdater<ChannelOperationsHandler> SCHEDULED_FLUSH =
-        AtomicLongFieldUpdater.newUpdater(ChannelOperationsHandler.class, "scheduledFlush");
+            AtomicLongFieldUpdater.newUpdater(ChannelOperationsHandler.class, "scheduledFlush");
     static final Logger                                              log =
-        Loggers.getLogger(ChannelOperationsHandler.class);
-    
+            Loggers.getLogger(ChannelOperationsHandler.class);
+
     static final BiConsumer<?, ? super ByteBuf> NOOP_ENCODER = (a, b) -> {
     };
-    
+
     private static final class PendingWritesOnCompletion {
         @Override
         public String toString() {

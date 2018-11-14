@@ -81,6 +81,10 @@ public class ClientServerInputMultiplexer implements Closeable {
               } else {
                 client.onNext(frame);
               }
+            },
+            t -> {
+              LOGGER.error("test", t);
+              dispose();
             });
 
     /*

@@ -16,23 +16,26 @@
 
 package io.rsocket.transport.netty;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.rsocket.DuplexConnection;
 import io.rsocket.Frame;
-import io.rsocket.internal.UnboundedProcessor;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
+import reactor.netty.FutureMono;
 import reactor.netty.NettyOutbound;
 
 import java.util.Objects;
 
 /** An implementation of {@link DuplexConnection} that connects via TCP. */
 public final class TcpDuplexConnection implements DuplexConnection {
-  
+
   private final Connection connection;
   private final NettyOutbound outbound;
-  
+
   /**
    * Creates a new instance
    *
@@ -42,45 +45,76 @@ public final class TcpDuplexConnection implements DuplexConnection {
     this.connection = Objects.requireNonNull(connection, "connection must not be null");
     this.outbound = connection.outbound();
   }
-  
+
   @Override
   public void dispose() {
     connection.dispose();
   }
-  
+
   @Override
   public boolean isDisposed() {
     return connection.isDisposed();
   }
-  
+
   @Override
   public Mono<Void> onClose() {
     return connection.onDispose();
   }
-  
+
   @Override
   public Flux<Frame> receive() {
     return connection.inbound().receive().map(buf -> Frame.from(buf.retain()));
   }
-  
+
   @Override
   public Mono<Void> send(Publisher<Frame> frames) {
-    if (frames instanceof UnboundedProcessor) {
-      return Flux.from(frames)
-                 .map(Frame::content)
-                 .flatMapSequential(outbound::sendObject, 256, Integer.MAX_VALUE)
-                 .then();
-    } else {
-      return Flux.from(frames)
-                 .map(Frame::content)
-                 .concatMap(outbound::sendObject, 256)
-                 .then();
-    }
+    Channel channel = connection.channel();
+    return Flux
+               .from(frames)
+               .map(Frame::content)
+               .buffer(20)
+               .concatMap(list -> {
+                 return FutureMono.disposableWriteAndFlush(channel, Flux.fromIterable(list));
+               })
+               .then();
   }
-  
+    //return outbound.send(Flux.from(frames).map(Frame::content)).then();
+
+    /*
+    
+	public NettyOutbound sendObject(Publisher<?> dataStream) {
+		return then(FutureMono.disposableWriteAndFlush(connection.channel(), dataStream));
+	}
+	
+	@Override
+	public NettyOutbound sendObject(Object message) {
+		return then(FutureMono.deferFuture(() -> connection.channel()
+		                                                   .writeAndFlush(message)));
+	}
+    
+    return Flux.from(frames)
+        .map(Frame::content)
+        .transform(
+            byteBufFlux -> {
+              FluxConcatMapEagerPublisher<ByteBuf, Void> fluxConcatMapEagerPublisher =
+                  new FluxConcatMapEagerPublisher<>(
+                      byteBufFlux,
+                      outbound::sendObject,
+                      256,
+                      256 * 4,
+                      FluxConcatMapEagerPublisher.ErrorMode.IMMEDIATE);
+              return fluxConcatMapEagerPublisher;
+            })
+        .then();*/
+
+    /* return Flux.from(frames)
+    .map(Frame::content)
+    .flatMapSequential(outbound::sendObject, 1, Integer.MAX_VALUE)
+    .then();
+  }*/
+
   @Override
   public Mono<Void> sendOne(Frame frame) {
     return outbound.sendObject(frame.content()).then();
   }
-  
 }

@@ -28,8 +28,11 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
+import reactor.core.publisher.UnicastProcessor;
+import reactor.util.concurrent.Queues;
 
 import java.util.Collections;
+import java.util.Queue;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -46,7 +49,7 @@ class RSocketServer implements RSocket {
   private final Consumer<Throwable> errorConsumer;
 
   private final AtomicInt2ObjectHashMap<Subscription> sendingSubscriptions;
-  private final  AtomicInt2ObjectHashMap<TransmitProcessor<Payload>> channelProcessors;
+  private final  AtomicInt2ObjectHashMap<UnicastProcessor<Payload>> channelProcessors;
 
   private final UnboundedProcessor<Frame> sendProcessor;
   private KeepAliveHandler keepAliveHandler;
@@ -123,7 +126,7 @@ class RSocketServer implements RSocket {
       }
     }
 
-    for (TransmitProcessor subscription : channelProcessors.values()) {
+    for (UnicastProcessor subscription : channelProcessors.values()) {
       try {
         subscription.cancel();
       } catch (Throwable e) {
@@ -145,7 +148,7 @@ class RSocketServer implements RSocket {
       }
     }
 
-    for (TransmitProcessor subscription : channelProcessors.values()) {
+    for (UnicastProcessor subscription : channelProcessors.values()) {
       try {
         subscription.cancel();
       } catch (Throwable e) {
@@ -363,7 +366,7 @@ class RSocketServer implements RSocket {
   }
 
   private void handleChannel(int streamId, Payload payload, int initialRequestN) {
-    TransmitProcessor<Payload> frames = TransmitProcessor.create();
+    UnicastProcessor<Payload> frames = UnicastProcessor.create(Queues.<Payload>one().get());
     channelProcessors.put(streamId, frames);
 
     Flux<Payload> payloads =
